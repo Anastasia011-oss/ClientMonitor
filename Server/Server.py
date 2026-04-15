@@ -10,6 +10,7 @@ PORT = 5000
 lock = threading.Lock()
 
 clients_online = {}
+files_cache = {}
 
 server = 'DESKTOP-EOO77GM\\SQLEXPRESS'
 database = 'ClientMonitorDB'
@@ -25,6 +26,15 @@ except Exception as e:
     exit(1)
 
 
+def show_file_content(content, filename):
+    win = tk.Toplevel()
+    win.title(f"Файл: {filename}")
+
+    text = tk.Text(win, wrap="word")
+    text.insert("1.0", content)
+    text.pack(fill=tk.BOTH, expand=True)
+
+
 def handle_client(conn, addr):
     ip = addr[0]
 
@@ -33,21 +43,49 @@ def handle_client(conn, addr):
 
     try:
         while True:
-            data = conn.recv(1024).decode()
+            data = conn.recv(4096).decode()
             if not data:
                 break
 
-            if data.startswith("ONLINE|"):
-                hostname = data.split("|")[1]
+            for line in data.split("\n"):
+                if not line:
+                    continue
 
-                with lock:
-                    cursor.execute("""
-                    IF EXISTS (SELECT 1 FROM [clients] WHERE [ip]=?)
-                        UPDATE [clients] SET [last_seen]=?, [hostname]=? WHERE [ip]=?
-                    ELSE
-                        INSERT INTO [clients] ([ip], [last_seen], [hostname]) VALUES (?, ?, ?)
-                    """, (ip, time.time(), hostname, ip, ip, time.time(), hostname))
-                    conn_db.commit()
+                if line.startswith("ONLINE|"):
+                    hostname = line.split("|")[1]
+
+                    with lock:
+                        cursor.execute("""
+                        IF EXISTS (SELECT 1 FROM [clients] WHERE [ip]=?)
+                            UPDATE [clients] SET [last_seen]=?, [hostname]=? WHERE [ip]=?
+                        ELSE
+                            INSERT INTO [clients] ([ip], [last_seen], [hostname]) VALUES (?, ?, ?)
+                        """, (ip, time.time(), hostname, ip, ip, time.time(), hostname))
+                        conn_db.commit()
+
+                elif line.startswith("FILES|"):
+                    parts = line.split("|", 2)
+
+                    if len(parts) < 3:
+                        continue
+
+                    path = parts[1]
+                    files_str = parts[2]
+                    files = files_str.split("||") if files_str else []
+
+                    with lock:
+                        files_cache[ip] = (path, files)
+
+                elif line.startswith("FILE_CONTENT|"):
+                    parts = line.split("|", 2)
+
+                    if len(parts) < 3:
+                        continue
+
+                    filename = parts[1]
+                    content = parts[2]
+
+                    root.after(0, show_file_content, content, filename)
 
     except:
         pass
@@ -89,16 +127,32 @@ def update_table():
             if ip == selected_ip:
                 tree.selection_set(item)
 
+            if ip in files_cache:
+                path, files = files_cache[ip]
+
+                tree.insert(item, "end", values=(f"[{path}]", "", ""))
+                tree.insert(item, "end", values=("------------------------------", "", ""))
+
+                for f in files:
+                    if f:
+                        tree.insert(item, "end", values=("  • " + f, "", ""))
+
+                tree.item(item, open=True)
+
     root.after(2000, update_table)
 
 
 def get_selected_ip():
     selected = tree.selection()
     if not selected:
-        messagebox.showwarning("Ошибка", "Выберите клиента")
         return None
 
-    return tree.item(selected[0])["values"][0]
+    values = tree.item(selected[0])["values"]
+
+    if len(values) > 0 and "." in str(values[0]):
+        return values[0]
+
+    return None
 
 
 def send_command(cmd):
@@ -112,25 +166,65 @@ def send_command(cmd):
                 clients_online[ip].send((cmd + "\n").encode())
             except:
                 messagebox.showerror("Ошибка", "Не удалось отправить")
-        else:
-            messagebox.showerror("Ошибка", "Клиент оффлайн")
+
+
+def on_double_click(event):
+    selected = tree.selection()
+    if not selected:
+        return
+
+    item = selected[0]
+    values = tree.item(item)["values"]
+    parent = tree.parent(item)
+
+    if parent == "":
+        ip = values[0]
+
+        with lock:
+            if ip in clients_online:
+                clients_online[ip].send("GET_FILES|\n".encode())
+
+    else:
+        parent_values = tree.item(parent)["values"]
+        ip = parent_values[0]
+
+        filename = values[0].replace("•", "").strip()
+
+        with lock:
+            if ip in clients_online and ip in files_cache:
+                current_path = files_cache[ip][0]
+                full_path = current_path + "\\" + filename
+
+                clients_online[ip].send(f"GET_FILE_CONTENT|{full_path}\n".encode())
 
 
 root = tk.Tk()
 root.title("Админ панель")
 
-tree = ttk.Treeview(root, columns=("IP", "Hostname", "Status"), show="headings")
+style = ttk.Style()
+style.configure("Treeview",
+                background="#0b1a3a",
+                foreground="white",
+                fieldbackground="#e6eef7",
+                rowheight=25)
+
+style.map('Treeview', background=[('selected', '#b3d1ff')])
+
+tree = ttk.Treeview(root, columns=("IP", "Hostname", "Status"))
+
 tree.heading("IP", text="IP")
 tree.heading("Hostname", text="Hostname")
 tree.heading("Status", text="Status")
+
 tree.pack(fill=tk.BOTH, expand=True)
+
+tree.bind("<Double-1>", on_double_click)
 
 btn_frame = tk.Frame(root)
 btn_frame.pack()
 
-tk.Button(btn_frame, text="Выключить ПК", command=lambda: send_command("SHUTDOWN")).pack(side=tk.LEFT, padx=5, pady=5)
-
-tk.Button(btn_frame, text="Запуск PowerShell", command=lambda: send_command("POWERSHELL|Get-Process")).pack(side=tk.LEFT, padx=5, pady=5)
+tk.Button(btn_frame, text="Выключить ПК", command=lambda: send_command("SHUTDOWN")).pack(side=tk.LEFT)
+tk.Button(btn_frame, text="Запуск PowerShell", command=lambda: send_command("POWERSHELL|Get-Process")).pack(side=tk.LEFT)
 
 
 def on_closing():
