@@ -1,9 +1,11 @@
 import socket
 import threading
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import time
 import pyodbc
+import os
+import base64
 
 HOST = "0.0.0.0"
 PORT = 5000
@@ -87,6 +89,10 @@ def handle_client(conn, addr):
 
                     root.after(0, show_file_content, content, filename)
 
+                elif line.startswith("FILE_RECEIVED|"):
+                    filename = line.split("|")[1]
+                    root.after(0, lambda: messagebox.showinfo("Успех", f"Файл {filename} доставлен"))
+
     except:
         pass
     finally:
@@ -168,6 +174,30 @@ def send_command(cmd):
                 messagebox.showerror("Ошибка", "Не удалось отправить")
 
 
+def send_file_to_client():
+    ip = get_selected_ip()
+    if not ip:
+        return
+
+    filepath = filedialog.askopenfilename()
+    if not filepath:
+        return
+
+    try:
+        with open(filepath, "rb") as f:
+            data = f.read()
+
+        filename = os.path.basename(filepath)
+        encoded = base64.b64encode(data).decode()
+
+        with lock:
+            if ip in clients_online:
+                clients_online[ip].send(f"SEND_FILE|{filename}|{encoded}\n".encode())
+
+    except:
+        messagebox.showerror("Ошибка", "Не удалось отправить файл")
+
+
 def on_double_click(event):
     selected = tree.selection()
     if not selected:
@@ -188,14 +218,19 @@ def on_double_click(event):
         parent_values = tree.item(parent)["values"]
         ip = parent_values[0]
 
-        filename = values[0].replace("•", "").strip()
+        name = values[0].replace("•", "").strip()
 
         with lock:
             if ip in clients_online and ip in files_cache:
                 current_path = files_cache[ip][0]
-                full_path = current_path + "\\" + filename
 
-                clients_online[ip].send(f"GET_FILE_CONTENT|{full_path}\n".encode())
+                if name.startswith("[DIR]"):
+                    folder = name.replace("[DIR]", "")
+                    new_path = current_path + "\\" + folder
+                    clients_online[ip].send(f"GET_FILES|{new_path}\n".encode())
+                else:
+                    full_path = current_path + "\\" + name
+                    clients_online[ip].send(f"GET_FILE_CONTENT|{full_path}\n".encode())
 
 
 root = tk.Tk()
@@ -225,6 +260,7 @@ btn_frame.pack()
 
 tk.Button(btn_frame, text="Выключить ПК", command=lambda: send_command("SHUTDOWN")).pack(side=tk.LEFT)
 tk.Button(btn_frame, text="Запуск PowerShell", command=lambda: send_command("POWERSHELL|Get-Process")).pack(side=tk.LEFT)
+tk.Button(btn_frame, text="Отправить файл", command=send_file_to_client).pack(side=tk.LEFT)
 
 
 def on_closing():

